@@ -238,9 +238,15 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     session.phase = _Phase.processing;
     final rawInput = session.input.takeBytes();
 
+    if (ops.decodeInput == null) {
+      session.phase = _Phase.configured;
+      throw DriverError.notSupported(
+          'decodeInput not provided — subsystem must supply a default');
+    }
+
     I input;
     try {
-      input = ops.decodeInput(rawInput, config: session.config);
+      input = ops.decodeInput!(rawInput, config: session.config);
     } on DriverError {
       session.phase = _Phase.configured;
       rethrow;
@@ -256,9 +262,15 @@ final class ConfiguredStreamDriver<C, I, O, S> {
       session: session.state as S,
     );
 
+    if (ops.encodeOutput == null) {
+      session.phase = _Phase.configured;
+      throw DriverError.notSupported(
+          'encodeOutput not provided — subsystem must supply a default');
+    }
+
     session.outputDone = false;
     session.outputSub = stream
-        .map((chunk) => ops.encodeOutput(chunk, config: session.config))
+        .map((chunk) => ops.encodeOutput!(chunk, config: session.config))
         .listen(
       (encoded) {
         session.outputBuffer.add(encoded);
@@ -308,25 +320,39 @@ final class ConfiguredStreamDriver<C, I, O, S> {
       return _handleFwIoctl(session, num, req);
     }
 
-    // Subsystem-level ioctl — delegate to config codec.
-    if (session.phase != _Phase.open && session.phase != _Phase.configured) {
-      // Config only accepted in OPEN or CONFIGURED.
-      return FuseResponse(err: 16); // EBUSY
-    }
-
+    // Subsystem-level ioctl — try config codec (write-direction) first,
+    // then fall through to onQuery (read-direction) if codec rejects.
     try {
-      session.config = configCodec.apply(
+      final newConfig = configCodec.apply(
         session.config,
         cmd,
         Uint8List.fromList(req.inBuf),
       );
+      // Codec recognized this cmd — it's a config write.
+      if (session.phase != _Phase.open && session.phase != _Phase.configured) {
+        return FuseResponse(err: 16); // EBUSY — config only in OPEN/CONFIGURED
+      }
+      session.config = newConfig;
       if (session.phase == _Phase.open) {
         session.phase = _Phase.configured;
       }
       return FuseResponse(ioctl: IoctlReply(result: 0));
-    } on DriverError catch (e) {
-      return FuseResponse(err: e.errno);
+    } on DriverError {
+      // Codec didn't handle it — fall through to onQuery.
     }
+
+    // Read-direction query — available in any phase.
+    if (ops.onQuery != null) {
+      try {
+        final result =
+            await ops.onQuery!(cmd, session: session.state as S);
+        return FuseResponse(ioctl: IoctlReply(buf: result, result: 0));
+      } on DriverError catch (e) {
+        return FuseResponse(err: e.errno);
+      }
+    }
+
+    return FuseResponse(err: 22); // EINVAL — unrecognized ioctl
   }
 
   Future<FuseResponse> _handleFwIoctl(

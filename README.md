@@ -147,14 +147,17 @@ OPEN --ioctl/write()--> CONFIGURED --flush/read()--> PROCESSING --> STREAMING --
 |---|---|---|
 | `defaultConfig` | yes | Return default config for new sessions. |
 | `process` | yes | Take input + config + session, return output stream. |
-| `encodeOutput` | yes | Serialize one output chunk for read(). |
-| `decodeInput` | yes | Deserialize write() bytes into domain input. |
+| `encodeOutput` | no | Serialize one output chunk for read(). ENOSYS if null. |
+| `decodeInput` | no | Deserialize write() bytes into domain input. ENOSYS if null. |
+| `onQuery` | no | Handle read-direction ioctl queries (e.g., GET_METADATA). |
 | `onCancel` | no | Abort in-flight processing (called on DROP). |
 | `onDrain` | no | Graceful completion hook. |
 | `onSessionStart` | no | Allocate per-session state. |
 | `onSessionEnd` | no | Release per-session state. |
 
 Requires a `ConfigCodec<C>` that maps raw ioctl commands to typed config mutations. The driver never sees raw ioctl bytes.
+
+`encodeOutput` and `decodeInput` are optional -- subsystem layers can provide defaults. When null, the framework returns ENOSYS (38) on the path that would use them. `onQuery` provides read-direction ioctl routing: ioctls first try the config codec (write-direction), then fall through to `onQuery` (read-direction). Available in any state machine phase.
 
 **Framework ioctls** (type byte `0xBE`):
 | Command | Description |

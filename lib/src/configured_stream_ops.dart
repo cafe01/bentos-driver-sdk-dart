@@ -15,12 +15,13 @@ final class ConfiguredStreamOps<C, I, O, S> {
   const ConfiguredStreamOps({
     required this.defaultConfig,
     required this.process,
-    required this.encodeOutput,
-    required this.decodeInput,
+    this.encodeOutput,
+    this.decodeInput,
     this.onSessionStart,
     this.onSessionEnd,
     this.onCancel,
     this.onDrain,
+    this.onQuery,
   });
 
   /// Return default configuration for new sessions.
@@ -30,10 +31,27 @@ final class ConfiguredStreamOps<C, I, O, S> {
   final Stream<O> Function(I input, C config, {required S session}) process;
 
   /// Serialize one output chunk for the read() path.
-  final Uint8List Function(O chunk, {required C config}) encodeOutput;
+  ///
+  /// Optional — subsystem layers can provide defaults. If null at call time,
+  /// the framework throws [DriverError.notSupported].
+  final Uint8List Function(O chunk, {required C config})? encodeOutput;
 
   /// Deserialize accumulated write() bytes into domain input type.
-  final I Function(Uint8List data, {required C config}) decodeInput;
+  ///
+  /// Receives the accumulated write buffer for the **current cycle only**.
+  /// Not session history — cross-cycle state is caller-managed. Each
+  /// write/flush cycle starts with a fresh buffer.
+  ///
+  /// Optional — subsystem layers can provide defaults. If null at call time,
+  /// the framework throws [DriverError.notSupported].
+  final I Function(Uint8List data, {required C config})? decodeInput;
+
+  /// Handle read-direction ioctl queries.
+  ///
+  /// Called for non-framework ioctls that the [ConfigCodec] does not handle
+  /// (i.e., read-direction commands like GET_METADATA, GET_INFO).
+  /// Returns raw bytes for the ioctl response.
+  final FutureOr<Uint8List> Function(int cmd, {required S session})? onQuery;
 
   /// Allocate per-session domain state.
   final FutureOr<S> Function()? onSessionStart;

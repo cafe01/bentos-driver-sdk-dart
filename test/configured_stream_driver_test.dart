@@ -753,6 +753,305 @@ void main() {
       expect(ops.onSessionEnd, isNull);
       expect(ops.onCancel, isNull);
       expect(ops.onDrain, isNull);
+      expect(ops.onQuery, isNull);
+    });
+
+    test('encodeOutput and decodeInput are optional', () {
+      final ops = ConfiguredStreamOps<String, String, String, void>(
+        defaultConfig: () => '',
+        process: (input, config, {required session}) =>
+            Stream.value(input),
+      );
+      expect(ops.encodeOutput, isNull);
+      expect(ops.decodeInput, isNull);
+    });
+  });
+
+  group('onQuery callback', () {
+    late Directory qTmpDir;
+    late Uri qSockUri;
+    var qMsgId = 0;
+    int qNextId() => ++qMsgId;
+
+    setUp(() {
+      qTmpDir = Directory.systemTemp.createTempSync('cs_query_test_');
+      qSockUri = Uri.parse('unix://${qTmpDir.path}/driver.sock');
+      qMsgId = 0;
+    });
+
+    tearDown(() {
+      qTmpDir.deleteSync(recursive: true);
+    });
+
+    test('onQuery receives cmd and session, returns bytes', () async {
+      const queryCmd = 0x42;
+      int? receivedCmd;
+      Object? receivedSession;
+
+      final qDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) =>
+              Stream.value(input),
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+          onQuery: (cmd, {required session}) {
+            receivedCmd = cmd;
+            receivedSession = session;
+            return Uint8List.fromList([0xDE, 0xAD]);
+          },
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await qDriver.serve(qSockUri);
+      final c = TestClient(await connectDriver(qSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(qNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+
+      final resp = await c.roundTrip(
+        _msg(qNextId(), fh,
+            FuseRequest(ioctl: IoctlReq(cmd: queryCmd))),
+      );
+      expect(resp.response.err, 0);
+      expect(resp.response.ioctl.result, 0);
+      expect(resp.response.ioctl.buf, [0xDE, 0xAD]);
+      expect(receivedCmd, queryCmd, reason: 'onQuery receives correct cmd');
+      expect(receivedSession, isNotNull,
+          reason: 'onQuery receives session');
+
+      await c.close();
+      await qDriver.close();
+    });
+
+    test('onQuery available during STREAMING phase', () async {
+      const queryCmd = 0x42;
+
+      final qDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) async* {
+            for (final c in input.split('')) {
+              await Future<void>.delayed(const Duration(milliseconds: 100));
+              yield c;
+            }
+          },
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+          onQuery: (cmd, {required session}) =>
+              Uint8List.fromList([0xBE, 0xEF]),
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await qDriver.serve(qSockUri);
+      final c = TestClient(await connectDriver(qSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(qNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(qNextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('abc'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(qNextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      // Query during streaming — should work (read-direction).
+      final resp = await c.roundTrip(
+        _msg(qNextId(), fh,
+            FuseRequest(ioctl: IoctlReq(cmd: queryCmd))),
+      );
+      expect(resp.response.err, 0,
+          reason: 'onQuery works during STREAMING');
+      expect(resp.response.ioctl.buf, [0xBE, 0xEF]);
+
+      await c.close();
+      await qDriver.close();
+    });
+
+    test('EINVAL when no onQuery and unknown ioctl', () async {
+      final qDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) =>
+              Stream.value(input),
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await qDriver.serve(qSockUri);
+      final c = TestClient(await connectDriver(qSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(qNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+
+      final resp = await c.roundTrip(
+        _msg(qNextId(), fh,
+            FuseRequest(ioctl: IoctlReq(cmd: 0x42))),
+      );
+      expect(resp.response.err, 22,
+          reason: 'EINVAL when no onQuery for unknown cmd');
+
+      await c.close();
+      await qDriver.close();
+    });
+  });
+
+  group('optional encodeOutput/decodeInput', () {
+    late Directory optTmpDir;
+    late Uri optSockUri;
+    var optMsgId = 0;
+    int optNextId() => ++optMsgId;
+
+    setUp(() {
+      optTmpDir = Directory.systemTemp.createTempSync('cs_opt_test_');
+      optSockUri = Uri.parse('unix://${optTmpDir.path}/driver.sock');
+      optMsgId = 0;
+    });
+
+    tearDown(() {
+      optTmpDir.deleteSync(recursive: true);
+    });
+
+    test('null decodeInput — clear ENOSYS error on flush', () async {
+      final optDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) =>
+              Stream.value(input),
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          // decodeInput omitted — null
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await optDriver.serve(optSockUri);
+      final c = TestClient(await connectDriver(optSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(optNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('x'), offset: fixnum.Int64(0)))),
+      );
+
+      // Flush triggers _submit which needs decodeInput.
+      final resp = await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      expect(resp.response.err, 38,
+          reason: 'ENOSYS when decodeInput is null');
+
+      await c.close();
+      await optDriver.close();
+    });
+
+    test('null encodeOutput — clear ENOSYS error on flush', () async {
+      final optDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) =>
+              Stream.value(input),
+          // encodeOutput omitted — null
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await optDriver.serve(optSockUri);
+      final c = TestClient(await connectDriver(optSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(optNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('x'), offset: fixnum.Int64(0)))),
+      );
+
+      // Flush triggers _submit which needs encodeOutput.
+      final resp = await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      expect(resp.response.err, 38,
+          reason: 'ENOSYS when encodeOutput is null');
+
+      await c.close();
+      await optDriver.close();
+    });
+
+    test('provided encodeOutput/decodeInput — existing behavior', () async {
+      final optDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) async* {
+            yield input;
+          },
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await optDriver.serve(optSockUri);
+      final c = TestClient(await connectDriver(optSockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(optNextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('hello'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final resp = await c.roundTrip(
+        _msg(optNextId(), fh,
+            FuseRequest(read: ReadReq(
+                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
+      );
+      expect(utf8.decode(resp.response.buf.data), 'hello',
+          reason: 'works normally when both provided');
+
+      await c.close();
+      await optDriver.close();
     });
   });
 }
