@@ -13,6 +13,7 @@ export 'src/driver_error.dart';
 export 'src/event_stream_driver.dart';
 export 'src/event_stream_ops.dart';
 export 'src/generated/fuse_wire.pb.dart';
+export 'src/inference_types.dart';
 export 'src/stream_driver.dart';
 export 'src/stream_ops.dart';
 export 'src/write_read_driver.dart';
