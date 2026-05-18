@@ -5,7 +5,6 @@ repository: https://github.com/cafe01/bentos
 
 environment:
   sdk: ^3.8.0
-resolution: workspace
 
 publish_to: none
 
