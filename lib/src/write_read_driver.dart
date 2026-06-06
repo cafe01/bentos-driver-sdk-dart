@@ -10,6 +10,7 @@ import 'dart:typed_data';
 
 import 'package:fixnum/fixnum.dart' as fixnum;
 import 'package:logging/logging.dart';
+import 'package:stream_channel/stream_channel.dart';
 
 import 'driver.dart';
 import 'driver_context.dart';
@@ -62,17 +63,26 @@ final class WriteReadDriver<S> {
   late final BentosDriver _driver;
   final _sessions = <int, _Session<S>>{};
 
+  BentosDriver _build() => BentosDriver(
+        onOpen: _onOpen,
+        onRead: _onRead,
+        onWrite: _onWrite,
+        onFlush: _onFlush,
+        onRelease: _onRelease,
+        onPoll: _onPoll,
+      );
+
   /// Start serving on [endpoint].
   Future<void> serve(Uri endpoint) async {
-    _driver = BentosDriver(
-      onOpen: _onOpen,
-      onRead: _onRead,
-      onWrite: _onWrite,
-      onFlush: _onFlush,
-      onRelease: _onRelease,
-      onPoll: _onPoll,
-    );
+    _driver = _build();
     await _driver.serve(endpoint);
+  }
+
+  /// Serve this pattern over an already-framed [channel] — the in-process seam
+  /// (see [BentosDriver.serveChannel]).
+  void serveChannel(StreamChannel<Uint8List> channel) {
+    _driver = _build();
+    _driver.serveChannel(channel);
   }
 
   Future<FuseResponse> _onOpen(OpenReq req, DriverContext ctx) async {

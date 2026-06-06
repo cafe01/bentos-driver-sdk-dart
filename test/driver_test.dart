@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:fixnum/fixnum.dart' as fixnum;
+import 'package:stream_channel/stream_channel.dart';
 import 'package:test/test.dart';
 
 import 'package:bentos_driver_sdk/bentos_driver_sdk.dart';
@@ -229,6 +230,33 @@ void main() {
       expect(resp.response.err, equals(2)); // ENOENT
 
       await channel.sink.close();
+      await driver.close();
+    });
+
+    test('serveChannel serves over an in-process channel pair (no socket)',
+        () async {
+      final driver = BentosDriver(
+        onRead: (req, ctx) =>
+            FuseResponse(buf: BufReply(data: utf8.encode('in-process'))),
+      );
+      // A connected channel pair — kernel end (local) ↔ driver end (foreign).
+      final pair = StreamChannelController<Uint8List>();
+      driver.serveChannel(pair.foreign);
+
+      final msg = FuseMessage(
+        id: fixnum.Int64(7),
+        fh: fixnum.Int64(1),
+        request: FuseRequest(
+          read: ReadReq(size: fixnum.Int64(4096), offset: fixnum.Int64(0)),
+        ),
+      );
+      pair.local.sink.add(Uint8List.fromList(msg.writeToBuffer()));
+
+      final resp = FuseMessage.fromBuffer(await pair.local.stream.first);
+      expect(resp.id, equals(fixnum.Int64(7)));
+      expect(resp.response.err, equals(0));
+      expect(utf8.decode(resp.response.buf.data), equals('in-process'));
+
       await driver.close();
     });
 

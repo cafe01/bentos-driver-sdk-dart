@@ -93,7 +93,25 @@ final class BentosDriver {
   ServerSocket? _server;
   final _connections = <DriverConnection>[];
 
+  /// Serve driver ops over an already-framed [channel] — one connection, one
+  /// fuse_session multiplex.
+  ///
+  /// Each stream element is one complete [FuseMessage]; no length-prefix
+  /// framing is applied (the caller owns transport framing). This is the seam
+  /// every transport binds to: [serve] feeds it a socket-backed framed channel;
+  /// the in-process portal feeds it the kernel-side end of a connected channel
+  /// pair, no wire at all (`bentos-kernel-architecture.md` §6 — a driver is
+  /// just the P in IPC, behind one channel contract).
+  void serveChannel(StreamChannel<Uint8List> channel) {
+    final conn = DriverConnection._(channel);
+    _connections.add(conn);
+    conn._listen(_dispatch);
+  }
+
   /// Start serving on [endpoint]. Supports `unix://` and `tcp://` schemes.
+  ///
+  /// Sugar over [serveChannel]: binds the socket and delegates each accepted
+  /// connection, length-prefix framed, to [serveChannel].
   Future<void> serve(Uri endpoint) async {
     switch (endpoint.scheme) {
       case 'unix':
@@ -121,10 +139,7 @@ final class BentosDriver {
       socket.cast<Uint8List>(),
       SocketSink(socket),
     );
-    final framed = raw.transform(lengthPrefixedTransformer());
-    final conn = DriverConnection._(framed);
-    _connections.add(conn);
-    conn._listen(_dispatch);
+    serveChannel(raw.transform(lengthPrefixedTransformer()));
   }
 
   Future<FuseMessage> _dispatch(FuseMessage msg, DriverConnection conn) async {
