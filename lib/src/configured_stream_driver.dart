@@ -70,6 +70,11 @@ final class _Session<C, S> {
   /// Stream error, if the process stream errored.
   Object? streamError;
   StackTrace? streamErrorStack;
+
+  /// Completer that fires when the first output chunk (or stream end) arrives.
+  /// Pending reads await this so read() blocks until data is ready rather than
+  /// returning EAGAIN (which the in-process kernel maps to EIO).
+  Completer<void>? readyCompleter;
 }
 
 /// Pattern 4: Configured Stream framework.
@@ -135,14 +140,21 @@ final class ConfiguredStreamDriver<C, I, O, S> {
 
     switch (session.phase) {
       case _Phase.open:
-      case _Phase.configured:
-        // No data to read yet — EAGAIN.
+        // Nothing written yet — EAGAIN.
         return FuseResponse(err: 11); // EAGAIN
 
+      case _Phase.configured:
+        // First read() after write() triggers processing (spec §State Machine).
+        await _submit(session);
+        // Await the ready signal so we don't return EAGAIN to the caller.
+        await session.readyCompleter?.future;
+        // Re-enter the switch to deliver the now-buffered output.
+        return _onRead(req, ctx);
+
       case _Phase.processing:
-        // Still waiting for first chunk — implicit flush if accumulating,
-        // but from PROCESSING we just wait. Return EAGAIN.
-        return FuseResponse(err: 11); // EAGAIN
+        // Processing started; await first chunk rather than returning EAGAIN.
+        await session.readyCompleter?.future;
+        return _onRead(req, ctx);
 
       case _Phase.streaming:
       case _Phase.draining:
@@ -279,6 +291,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     }
 
     session.outputDone = false;
+    session.readyCompleter = Completer<void>();
     session.outputSub = stream
         .map((chunk) => ops.encodeOutput!(chunk, config: session.config))
         .listen(
@@ -286,6 +299,11 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         session.outputBuffer.add(encoded);
         if (session.phase == _Phase.processing) {
           session.phase = _Phase.streaming;
+        }
+        // Signal any waiting read() that data is available.
+        if (session.readyCompleter != null &&
+            !session.readyCompleter!.isCompleted) {
+          session.readyCompleter!.complete();
         }
       },
       onDone: () {
@@ -301,6 +319,11 @@ final class ConfiguredStreamDriver<C, I, O, S> {
             ops.onDrain!(session: session.state as S);
           }
         }
+        // Signal: stream finished (possibly empty).
+        if (session.readyCompleter != null &&
+            !session.readyCompleter!.isCompleted) {
+          session.readyCompleter!.complete();
+        }
       },
       onError: (Object e, StackTrace st) {
         _log.warning('Process stream error', e, st);
@@ -311,6 +334,11 @@ final class ConfiguredStreamDriver<C, I, O, S> {
           session.phase = _Phase.complete;
         } else {
           session.phase = _Phase.draining;
+        }
+        // Signal: stream errored.
+        if (session.readyCompleter != null &&
+            !session.readyCompleter!.isCompleted) {
+          session.readyCompleter!.complete();
         }
       },
     );
