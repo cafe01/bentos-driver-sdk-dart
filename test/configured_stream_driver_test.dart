@@ -1054,4 +1054,67 @@ void main() {
       await optDriver.close();
     });
   });
+
+  // Regression: read() must not return [] (false EOF) when buffer drains mid-stream.
+  // Before the fix, _onRead in streaming phase returned empty buf when outputBuffer was
+  // empty but outputDone was false — infer() interpreted that [] as EOF and exited early.
+  group('streaming — no false EOF on buffer drain', () {
+    test('multi-chunk stream with gap delivers all chunks before EOF', () async {
+      final controller = StreamController<String>();
+
+      final driver = ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) => controller.stream,
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (data, {required config}) => utf8.decode(data),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+
+      final pair = StreamChannelController<Uint8List>();
+      driver.serveChannel(pair.foreign);
+      final c = TestClient(pair.local);
+      var id = 0;
+      int nextId() => ++id;
+      const fh = 1;
+
+      await c.roundTrip(_msg(nextId(), fh, FuseRequest(open: OpenReq(flags: 2))));
+      await c.roundTrip(_msg(nextId(), fh,
+          FuseRequest(write: WriteReq(data: utf8.encode('x'), offset: fixnum.Int64(0)))));
+
+      // Emit chunk A before first read — it will be buffered when processing starts.
+      controller.add('A');
+
+      // First read triggers processing (configured phase → submit → wait for ready → deliver A).
+      final r1 = await c.roundTrip(_msg(nextId(), fh,
+          FuseRequest(read: ReadReq(size: fixnum.Int64(4096), offset: fixnum.Int64(0)))));
+      expect(utf8.decode(r1.response.buf.data), 'A',
+          reason: 'first chunk delivered');
+
+      // Schedule chunk B to arrive after a gap — buffer is empty when the next read() lands.
+      Future<void>.delayed(const Duration(milliseconds: 20)).then((_) {
+        controller.add('B');
+        controller.close();
+      });
+
+      // Second read: buffer is empty, stream not done.
+      // Without the fix this returned [] (false EOF). With the fix it waits for B.
+      final r2 = await c.roundTrip(_msg(nextId(), fh,
+          FuseRequest(read: ReadReq(size: fixnum.Int64(4096), offset: fixnum.Int64(0)))));
+      expect(r2.response.err, 0);
+      expect(utf8.decode(r2.response.buf.data), 'B',
+          reason: 'second chunk must not be swallowed by false EOF');
+
+      // Third read: stream done, buffer empty — real EOF.
+      final r3 = await c.roundTrip(_msg(nextId(), fh,
+          FuseRequest(read: ReadReq(size: fixnum.Int64(4096), offset: fixnum.Int64(0)))));
+      expect(r3.response.buf.data, isEmpty, reason: 'EOF after stream complete');
+
+      await c.close();
+      await controller.close();
+    });
+  });
 }

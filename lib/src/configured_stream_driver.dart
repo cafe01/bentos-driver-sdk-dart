@@ -171,8 +171,10 @@ final class ConfiguredStreamDriver<C, I, O, S> {
             session.phase = _Phase.complete;
             return FuseResponse(buf: BufReply(data: []));
           }
-          // Stream still running but no buffered data — empty.
-          return FuseResponse(buf: BufReply(data: []));
+          // Stream still active but buffer drained — wait for next chunk.
+          session.readyCompleter = Completer<void>();
+          await session.readyCompleter!.future;
+          return _onRead(req, ctx);
         }
         return _deliverOutput(session, req.size.toInt());
 
