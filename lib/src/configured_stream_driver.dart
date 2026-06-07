@@ -101,6 +101,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         onRead: _onRead,
         onWrite: _onWrite,
         onFlush: _onFlush,
+        onFsync: _onFsync,
         onRelease: _onRelease,
         onIoctl: _onIoctl,
         onPoll: _onPoll,
@@ -253,6 +254,23 @@ final class ConfiguredStreamDriver<C, I, O, S> {
   }
 
   Future<FuseResponse> _onFlush(FlushReq req, DriverContext ctx) async {
+    final fh = ctx.fh.toInt();
+    final session = _sessions[fh];
+    if (session == null) return FuseResponse(err: 5); // EIO
+
+    if (session.phase == _Phase.configured) {
+      await _submit(session);
+    }
+    return FuseResponse();
+  }
+
+  /// fsync() is the multiplexing consumer's barrier: it triggers inference on
+  /// the accumulated prompt WITHOUT a blocking read(), so the consumer can then
+  /// poll() for readiness and read() non-blocking. This is the prompt
+  /// ack/trigger — NOT the response drain (read()+EOF covers that). Mirrors
+  /// _onFlush: submit only from CONFIGURED; a no-op in any other phase (already
+  /// processing, or nothing written).
+  Future<FuseResponse> _onFsync(FsyncReq req, DriverContext ctx) async {
     final fh = ctx.fh.toInt();
     final session = _sessions[fh];
     if (session == null) return FuseResponse(err: 5); // EIO
