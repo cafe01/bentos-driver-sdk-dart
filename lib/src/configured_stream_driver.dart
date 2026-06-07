@@ -179,6 +179,12 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         return _deliverOutput(session, req.size.toInt());
 
       case _Phase.complete:
+        // If the stream errored with no output, surface the error.
+        if (session.streamError != null) {
+          final err = session.streamError!;
+          if (err is DriverError) return FuseResponse(err: err.errno);
+          return FuseResponse(err: 5); // EIO
+        }
         // EOF — signal end.
         return FuseResponse(buf: BufReply(data: []));
     }
