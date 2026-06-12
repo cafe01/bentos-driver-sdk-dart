@@ -1,14 +1,20 @@
 name: bentos_driver_sdk
-description: BentOS Driver SDK — build CUSE/FUSE drivers in pure Dart.
-version: 0.0.1
-repository: https://github.com/cafe01/bentos
+description: BentOS Driver SDK — build CUSE/FUSE drivers in pure Dart. No libfuse dependency. Implements the BentOS wire protocol (length-prefixed protobuf over Unix domain sockets) with four I/O pattern frameworks.
+version: 0.1.0
+repository: https://github.com/cafe01/bentos-driver-sdk-dart
+homepage: https://github.com/cafe01/bentos-driver-sdk-dart
+
+topics:
+  - agent
+  - ai
+  - driver
+  - bentos
 
 environment:
   sdk: ^3.8.0
 
-publish_to: none
-
 dependencies:
+  async: ^2.11.0
   fixnum: ^1.1.0
   logging: ^1.3.0
   protobuf: ^6.0.0
