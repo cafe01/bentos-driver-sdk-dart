@@ -55,8 +55,9 @@ final class _Session<C, S> {
   /// Current state machine phase.
   _Phase phase = _Phase.open;
 
-  /// Accumulated write data (input buffer).
-  final input = BytesBuilder(copy: false);
+  /// Accumulated write records — one [Uint8List] per write(), each preserving
+  /// a single write boundary intact for the subsystem's decodeInput.
+  final records = <Uint8List>[];
 
   /// Buffered output chunks (serialized).
   final outputBuffer = Queue<Uint8List>();
@@ -224,14 +225,14 @@ final class ConfiguredStreamDriver<C, I, O, S> {
       case _Phase.open:
         // First write with default config — advance to CONFIGURED.
         session.phase = _Phase.configured;
-        session.input.add(Uint8List.fromList(req.data));
+        session.records.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
 
       case _Phase.configured:
         // More writes accumulate.
-        session.input.add(Uint8List.fromList(req.data));
+        session.records.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
@@ -241,7 +242,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         session.phase = _Phase.configured;
         session.streamError = null;
         session.streamErrorStack = null;
-        session.input.add(Uint8List.fromList(req.data));
+        session.records.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
@@ -284,7 +285,11 @@ final class ConfiguredStreamDriver<C, I, O, S> {
   /// Submit accumulated input to process().
   Future<void> _submit(_Session<C, S> session) async {
     session.phase = _Phase.processing;
-    final rawInput = session.input.takeBytes();
+    // Hand the records to decodeInput, then clear — one cycle, fresh buffer.
+    // Snapshot the list so a re-entrant write (post-clear) can't mutate it
+    // under the callee.
+    final records = List<Uint8List>.of(session.records);
+    session.records.clear();
 
     if (ops.decodeInput == null) {
       session.phase = _Phase.configured;
@@ -294,7 +299,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
 
     I input;
     try {
-      input = ops.decodeInput!(rawInput, config: session.config);
+      input = ops.decodeInput!(records, config: session.config);
     } on DriverError {
       session.phase = _Phase.configured;
       rethrow;
@@ -500,7 +505,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     session.outputDone = false;
     session.streamError = null;
     session.streamErrorStack = null;
-    session.input.clear();
+    session.records.clear();
     session.config = ops.defaultConfig();
     session.phase = _Phase.open;
 

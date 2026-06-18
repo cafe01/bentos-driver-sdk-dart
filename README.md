@@ -148,7 +148,7 @@ OPEN --ioctl/write()--> CONFIGURED --flush/read()--> PROCESSING --> STREAMING --
 | `defaultConfig` | yes | Return default config for new sessions. |
 | `process` | yes | Take input + config + session, return output stream. |
 | `encodeOutput` | no | Serialize one output chunk for read(). ENOSYS if null. |
-| `decodeInput` | no | Deserialize write() bytes into domain input. ENOSYS if null. |
+| `decodeInput` | no | Deserialize the cycle's write() records (one `Uint8List` per write, boundaries intact) into domain input. ENOSYS if null. |
 | `onQuery` | no | Handle read-direction ioctl queries (e.g., GET_METADATA). |
 | `onCancel` | no | Abort in-flight processing (called on DROP). |
 | `onDrain` | no | Graceful completion hook. |

@@ -106,7 +106,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
           onSessionEnd: ({required session}) {},
           onCancel: ({required session}) => cancelled = true,
@@ -336,7 +337,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -384,7 +386,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
           onCancel: ({required session}) => cancelled = true,
         ),
@@ -655,6 +658,58 @@ void main() {
       expect(utf8.decode(resp.response.buf.data), 'dcba',
           reason: 'all accumulated input processed');
     });
+
+    test('decodeInput receives one record per write — boundaries intact',
+        () async {
+      List<Uint8List>? seenRecords;
+
+      final boundaryDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) => Stream.value(input),
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (records, {required config}) {
+            seenRecords = records;
+            return utf8.decode(records.expand((r) => r).toList());
+          },
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await boundaryDriver.serve(sockUri);
+      final c = TestClient(await connectDriver(sockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(nextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('ab'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('cd'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(seenRecords, isNotNull);
+      expect(seenRecords!.length, 2,
+          reason: 'two writes → two records, each boundary preserved');
+      expect(utf8.decode(seenRecords![0]), 'ab');
+      expect(utf8.decode(seenRecords![1]), 'cd');
+
+      await c.close();
+      await boundaryDriver.close();
+    });
   });
 
   group('ConfiguredStreamDriver stream error', () {
@@ -684,7 +739,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -743,7 +799,8 @@ void main() {
             Stream.value(input),
         encodeOutput: (chunk, {required config}) =>
             Uint8List.fromList(utf8.encode(chunk)),
-        decodeInput: (data, {required config}) => utf8.decode(data),
+        decodeInput: (records, {required config}) =>
+            utf8.decode(records.expand((r) => r).toList()),
       );
       expect(ops.defaultConfig, isNotNull);
       expect(ops.process, isNotNull);
@@ -796,7 +853,8 @@ void main() {
               Stream.value(input),
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
           onQuery: (cmd, {required session}) {
             receivedCmd = cmd;
@@ -844,7 +902,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
           onQuery: (cmd, {required session}) =>
               Uint8List.fromList([0xBE, 0xEF]),
@@ -891,7 +950,8 @@ void main() {
               Stream.value(input),
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -979,7 +1039,8 @@ void main() {
           process: (input, config, {required session}) =>
               Stream.value(input),
           // encodeOutput omitted — null
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -1019,7 +1080,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -1068,7 +1130,8 @@ void main() {
           process: (input, config, {required session}) => controller.stream,
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
