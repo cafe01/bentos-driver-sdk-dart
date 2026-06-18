@@ -192,20 +192,18 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     }
   }
 
+  /// Deliver exactly ONE buffered output chunk per read — one process yield maps
+  /// to one read event, preserving the boundary the subsystem emitted. A chunk
+  /// larger than [size] splits across reads (a byte-stream WITHIN a single
+  /// yield), but two distinct yields never coalesce into one read.
   FuseResponse _deliverOutput(_Session<C, S> session, int size) {
-    final result = BytesBuilder(copy: false);
-    var remaining = size;
-    while (remaining > 0 && session.outputBuffer.isNotEmpty) {
-      final chunk = session.outputBuffer.removeFirst();
-      if (chunk.length <= remaining) {
-        result.add(chunk);
-        remaining -= chunk.length;
-      } else {
-        result.add(Uint8List.sublistView(chunk, 0, remaining));
-        session.outputBuffer
-            .addFirst(Uint8List.sublistView(chunk, remaining));
-        remaining = 0;
-      }
+    final chunk = session.outputBuffer.removeFirst();
+    final Uint8List out;
+    if (chunk.length <= size) {
+      out = chunk;
+    } else {
+      out = Uint8List.sublistView(chunk, 0, size);
+      session.outputBuffer.addFirst(Uint8List.sublistView(chunk, size));
     }
 
     // If buffer drained and stream done, mark draining.
@@ -213,7 +211,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
       session.phase = _Phase.draining;
     }
 
-    return FuseResponse(buf: BufReply(data: result.takeBytes()));
+    return FuseResponse(buf: BufReply(data: out));
   }
 
   Future<FuseResponse> _onWrite(WriteReq req, DriverContext ctx) async {

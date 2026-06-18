@@ -76,6 +76,24 @@ void main() {
 
   int nextId() => ++msgId;
 
+  /// Read until EOF, returning one decoded string per read event. Each entry is
+  /// exactly one process yield — the output-boundary contract (Fatia 2).
+  Future<List<String>> readEvents(TestClient c, int fh) async {
+    final events = <String>[];
+    while (true) {
+      final r = await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(read: ReadReq(
+                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
+      );
+      if (r.response.err != 0) break;
+      final data = r.response.buf.data;
+      if (data.isEmpty) break; // EOF
+      events.add(utf8.decode(data));
+    }
+    return events;
+  }
+
   setUp(() {
     tmpDir = Directory.systemTemp.createTempSync('configured_stream_test_');
     sockUri = Uri.parse('unix://${tmpDir.path}/driver.sock');
@@ -178,7 +196,7 @@ void main() {
       expect(resp.response.err, 11, reason: 'EAGAIN in OPEN');
     });
 
-    test('write + flush + read delivers reversed output', () async {
+    test('write + flush + read — one read event per process yield', () async {
       const fh = 1;
       await client.roundTrip(
         _msg(nextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
@@ -200,14 +218,11 @@ void main() {
       // Give the async stream time to produce chunks.
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Read all output.
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(resp.response.err, 0);
-      expect(utf8.decode(resp.response.buf.data), 'cba');
+      // process yields 'c','b','a' — three yields → three read events,
+      // never coalesced into a single 'cba' read.
+      final events = await readEvents(client, fh);
+      expect(events, ['c', 'b', 'a'],
+          reason: 'one read event per yield, boundaries intact');
     });
 
     test('write during STREAMING returns EBUSY', () async {
@@ -255,19 +270,9 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r1 = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r1.response.buf.data), 'ba');
-
-      // Read again to get EOF and reach COMPLETE.
-      await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
+      // 'ab' reversed → yields 'b','a'; readEvents drains to EOF, reaching COMPLETE.
+      final c1 = await readEvents(client, fh);
+      expect(c1, ['b', 'a']);
 
       // Cycle 2 — write should restart.
       await client.roundTrip(
@@ -281,12 +286,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r2 = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r2.response.buf.data), 'dc');
+      final c2 = await readEvents(client, fh);
+      expect(c2, ['d', 'c']);
     });
 
     test('ioctl config applies — uppercase', () async {
@@ -315,12 +316,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(resp.response.buf.data), 'CBA');
+      final events = await readEvents(client, fh);
+      expect(events, ['C', 'B', 'A']);
     });
 
     test('ioctl during STREAMING returns EBUSY', () async {
@@ -469,12 +466,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final readResp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(readResp.response.buf.data), 'cba',
+      final events = await readEvents(client, fh);
+      expect(events, ['c', 'b', 'a'],
           reason: 'lowercase — config was reset');
     });
 
@@ -568,20 +561,10 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r1 = await client.roundTrip(
-        _msg(nextId(), fh1,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      final r2 = await client.roundTrip(
-        _msg(nextId(), fh2,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r1.response.buf.data), 'BA',
-          reason: 'fh1 has uppercase config');
-      expect(utf8.decode(r2.response.buf.data), 'ba',
-          reason: 'fh2 has default config');
+      final e1 = await readEvents(client, fh1);
+      final e2 = await readEvents(client, fh2);
+      expect(e1, ['B', 'A'], reason: 'fh1 has uppercase config');
+      expect(e2, ['b', 'a'], reason: 'fh2 has default config');
     });
 
     test('release cleans up session', () async {
@@ -650,13 +633,10 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(resp.response.buf.data), 'dcba',
-          reason: 'all accumulated input processed');
+      // 'abcd' reversed → yields 'd','c','b','a', one read event each.
+      final events = await readEvents(client, fh);
+      expect(events, ['d', 'c', 'b', 'a'],
+          reason: 'all accumulated input processed, per-yield boundaries');
     });
 
     test('decodeInput receives one record per write — boundaries intact',
@@ -709,6 +689,106 @@ void main() {
 
       await c.close();
       await boundaryDriver.close();
+    });
+
+    test('process yields → one read event per yield, output boundaries intact',
+        () async {
+      final boundaryDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) async* {
+            yield 'ab';
+            yield 'cd';
+            yield 'ef';
+          },
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await boundaryDriver.serve(sockUri);
+      final c = TestClient(await connectDriver(sockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(nextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('x'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // Naive coalescing would deliver 'abcdef' in one read; the contract is
+      // three distinct read events, one per yield, each boundary preserved.
+      final events = await readEvents(c, fh);
+      expect(events, ['ab', 'cd', 'ef'],
+          reason: 'three yields → three read events, never coalesced');
+
+      await c.close();
+      await boundaryDriver.close();
+    });
+
+    test('single yield larger than read size splits across reads — byte-stream '
+        'within one boundary', () async {
+      final splitDriver =
+          ConfiguredStreamDriver<TestConfig, String, String, Object>(
+        ConfiguredStreamOps(
+          defaultConfig: TestConfig.new,
+          process: (input, config, {required session}) =>
+              Stream.value('abcdef'),
+          encodeOutput: (chunk, {required config}) =>
+              Uint8List.fromList(utf8.encode(chunk)),
+          decodeInput: (records, {required config}) =>
+              utf8.decode(records.expand((r) => r).toList()),
+          onSessionStart: Object.new,
+        ),
+        configCodec: TestConfigCodec(),
+      );
+      await splitDriver.serve(sockUri);
+      final c = TestClient(await connectDriver(sockUri));
+
+      const fh = 1;
+      await c.roundTrip(
+        _msg(nextId(), fh, FuseRequest(open: OpenReq(flags: 2))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(write: WriteReq(
+                data: utf8.encode('x'), offset: fixnum.Int64(0)))),
+      );
+      await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(flush: FlushReq(lockOwner: fixnum.Int64(0)))),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      // A single 6-byte yield, read 4 bytes at a time → 'abcd' then 'ef'. The
+      // split is WITHIN one yield (no boundary to lose), unlike two yields.
+      final r1 = await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(read: ReadReq(
+                size: fixnum.Int64(4), offset: fixnum.Int64(0)))),
+      );
+      expect(utf8.decode(r1.response.buf.data), 'abcd');
+      final r2 = await c.roundTrip(
+        _msg(nextId(), fh,
+            FuseRequest(read: ReadReq(
+                size: fixnum.Int64(4), offset: fixnum.Int64(0)))),
+      );
+      expect(utf8.decode(r2.response.buf.data), 'ef');
+
+      await c.close();
+      await splitDriver.close();
     });
   });
 
