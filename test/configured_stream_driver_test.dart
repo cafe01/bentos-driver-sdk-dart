@@ -38,6 +38,27 @@ final class TestClient {
   Future<void> close() => _channel.sink.close();
 }
 
+/// Drain the output by reading ONE record per read() (datagram-symmetric:
+/// 1 read = 1 record), stopping at EOF (an empty buf). Returns each record
+/// utf8-decoded — the read-per-record discipline the SOCK_SEQPACKET boundary
+/// law demands, NOT a single coalescing drain.
+Future<List<String>> _readRecords(
+    TestClient client, int Function() nextId, int fh) async {
+  final records = <String>[];
+  while (true) {
+    final resp = await client.roundTrip(
+      _msg(nextId(), fh,
+          FuseRequest(read: ReadReq(
+              size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
+    );
+    expect(resp.response.err, 0);
+    final data = resp.response.buf.data;
+    if (data.isEmpty) break; // EOF
+    records.add(utf8.decode(data));
+  }
+  return records;
+}
+
 // --- Test subsystem types ---
 
 final class TestConfig {
@@ -200,14 +221,10 @@ void main() {
       // Give the async stream time to produce chunks.
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Read all output.
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(resp.response.err, 0);
-      expect(utf8.decode(resp.response.buf.data), 'cba');
+      // Datagram-symmetric read: one record per read() — 'abc' reversed is
+      // three records 'c','b','a', each delivered by its own read.
+      final got = await _readRecords(client, nextId, fh);
+      expect(got, ['c', 'b', 'a']);
     });
 
     test('write during STREAMING returns EBUSY', () async {
@@ -255,19 +272,9 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r1 = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r1.response.buf.data), 'ba');
-
-      // Read again to get EOF and reach COMPLETE.
-      await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
+      // Records 'b','a' then EOF — _readRecords drains through to COMPLETE.
+      final r1 = await _readRecords(client, nextId, fh);
+      expect(r1, ['b', 'a']);
 
       // Cycle 2 — write should restart.
       await client.roundTrip(
@@ -281,12 +288,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r2 = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r2.response.buf.data), 'dc');
+      final r2 = await _readRecords(client, nextId, fh);
+      expect(r2, ['d', 'c']);
     });
 
     test('ioctl config applies — uppercase', () async {
@@ -315,12 +318,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(resp.response.buf.data), 'CBA');
+      final got = await _readRecords(client, nextId, fh);
+      expect(got, ['C', 'B', 'A']);
     });
 
     test('ioctl during STREAMING returns EBUSY', () async {
@@ -469,13 +468,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final readResp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(readResp.response.buf.data), 'cba',
-          reason: 'lowercase — config was reset');
+      final got = await _readRecords(client, nextId, fh);
+      expect(got, ['c', 'b', 'a'], reason: 'lowercase — config was reset');
     });
 
     test('onDrain fires when output stream completes', () async {
@@ -568,20 +562,10 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final r1 = await client.roundTrip(
-        _msg(nextId(), fh1,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      final r2 = await client.roundTrip(
-        _msg(nextId(), fh2,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(r1.response.buf.data), 'BA',
-          reason: 'fh1 has uppercase config');
-      expect(utf8.decode(r2.response.buf.data), 'ba',
-          reason: 'fh2 has default config');
+      final r1 = await _readRecords(client, nextId, fh1);
+      final r2 = await _readRecords(client, nextId, fh2);
+      expect(r1, ['B', 'A'], reason: 'fh1 has uppercase config');
+      expect(r2, ['b', 'a'], reason: 'fh2 has default config');
     });
 
     test('release cleans up session', () async {
@@ -650,12 +634,8 @@ void main() {
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      final resp = await client.roundTrip(
-        _msg(nextId(), fh,
-            FuseRequest(read: ReadReq(
-                size: fixnum.Int64(4096), offset: fixnum.Int64(0)))),
-      );
-      expect(utf8.decode(resp.response.buf.data), 'dcba',
+      final got = await _readRecords(client, nextId, fh);
+      expect(got, ['d', 'c', 'b', 'a'],
           reason: 'all accumulated input processed');
     });
   });

@@ -194,27 +194,20 @@ final class ConfiguredStreamDriver<C, I, O, S> {
   }
 
   FuseResponse _deliverOutput(_Session<C, S> session, int size) {
-    final result = BytesBuilder(copy: false);
-    var remaining = size;
-    while (remaining > 0 && session.outputBuffer.isNotEmpty) {
-      final chunk = session.outputBuffer.removeFirst();
-      if (chunk.length <= remaining) {
-        result.add(chunk);
-        remaining -= chunk.length;
-      } else {
-        result.add(Uint8List.sublistView(chunk, 0, remaining));
-        session.outputBuffer
-            .addFirst(Uint8List.sublistView(chunk, remaining));
-        remaining = 0;
-      }
-    }
+    // Datagram-symmetric output: exactly ONE record per read() — the mirror of
+    // the input side's 1 write = 1 record. The buffered chunk IS one encoded
+    // output record (one ChatEvent); coalescing multiple records into a single
+    // read, the way a byte stream would, violates the SOCK_SEQPACKET boundary
+    // law just as in-band length-prefix framing did on input. The kernel, not
+    // the driver, owns any MSG_TRUNC truncation against `size`.
+    final chunk = session.outputBuffer.removeFirst();
 
     // If buffer drained and stream done, mark draining.
     if (session.outputBuffer.isEmpty && session.outputDone) {
       session.phase = _Phase.draining;
     }
 
-    return FuseResponse(buf: BufReply(data: result.takeBytes()));
+    return FuseResponse(buf: BufReply(data: chunk));
   }
 
   Future<FuseResponse> _onWrite(WriteReq req, DriverContext ctx) async {
