@@ -67,7 +67,8 @@ void main() async {
       },
       encodeOutput: (chunk, {required config}) =>
           Uint8List.fromList(utf8.encode(chunk)),
-      decodeInput: (data, {required config}) => utf8.decode(data),
+      decodeInput: (records, {required config}) =>
+          records.map(utf8.decode).join(),
       onSessionStart: Object.new,
     ),
     configCodec: SynthConfigCodec(),

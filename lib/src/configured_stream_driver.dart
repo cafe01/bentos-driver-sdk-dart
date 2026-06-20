@@ -55,8 +55,10 @@ final class _Session<C, S> {
   /// Current state machine phase.
   _Phase phase = _Phase.open;
 
-  /// Accumulated write data (input buffer).
-  final input = BytesBuilder(copy: false);
+  /// Per-write input records for the current cycle — one entry per write()
+  /// syscall, record boundaries preserved (the SOCK_SEQPACKET datagram law:
+  /// 1 write = 1 record, never collapsed into a single buffer).
+  final input = <Uint8List>[];
 
   /// Buffered output chunks (serialized).
   final outputBuffer = Queue<Uint8List>();
@@ -230,7 +232,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         );
 
       case _Phase.configured:
-        // More writes accumulate.
+        // More writes — each is its own record.
         session.input.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
@@ -284,7 +286,8 @@ final class ConfiguredStreamDriver<C, I, O, S> {
   /// Submit accumulated input to process().
   Future<void> _submit(_Session<C, S> session) async {
     session.phase = _Phase.processing;
-    final rawInput = session.input.takeBytes();
+    final records = List<Uint8List>.of(session.input);
+    session.input.clear();
 
     if (ops.decodeInput == null) {
       session.phase = _Phase.configured;
@@ -294,7 +297,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
 
     I input;
     try {
-      input = ops.decodeInput!(rawInput, config: session.config);
+      input = ops.decodeInput!(records, config: session.config);
     } on DriverError {
       session.phase = _Phase.configured;
       rethrow;

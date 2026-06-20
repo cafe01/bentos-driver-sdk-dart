@@ -106,7 +106,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
           onSessionEnd: ({required session}) {},
           onCancel: ({required session}) => cancelled = true,
@@ -336,7 +337,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -384,7 +386,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
           onCancel: ({required session}) => cancelled = true,
         ),
@@ -684,7 +687,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -743,7 +747,8 @@ void main() {
             Stream.value(input),
         encodeOutput: (chunk, {required config}) =>
             Uint8List.fromList(utf8.encode(chunk)),
-        decodeInput: (data, {required config}) => utf8.decode(data),
+        decodeInput: (records, {required config}) =>
+            records.map(utf8.decode).join(),
       );
       expect(ops.defaultConfig, isNotNull);
       expect(ops.process, isNotNull);
@@ -796,7 +801,8 @@ void main() {
               Stream.value(input),
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
           onQuery: (cmd, {required session}) {
             receivedCmd = cmd;
@@ -844,7 +850,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
           onQuery: (cmd, {required session}) =>
               Uint8List.fromList([0xBE, 0xEF]),
@@ -891,7 +898,8 @@ void main() {
               Stream.value(input),
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -979,7 +987,8 @@ void main() {
           process: (input, config, {required session}) =>
               Stream.value(input),
           // encodeOutput omitted — null
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -1019,7 +1028,8 @@ void main() {
           },
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
@@ -1068,7 +1078,8 @@ void main() {
           process: (input, config, {required session}) => controller.stream,
           encodeOutput: (chunk, {required config}) =>
               Uint8List.fromList(utf8.encode(chunk)),
-          decodeInput: (data, {required config}) => utf8.decode(data),
+          decodeInput: (records, {required config}) =>
+              records.map(utf8.decode).join(),
           onSessionStart: Object.new,
         ),
         configCodec: TestConfigCodec(),
