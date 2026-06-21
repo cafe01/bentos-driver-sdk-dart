@@ -36,16 +36,14 @@ final class ConfiguredStreamOps<C, I, O, S> {
   /// the framework throws [DriverError.notSupported].
   final Uint8List Function(O chunk, {required C config})? encodeOutput;
 
-  /// Deserialize the accumulated write() records into the domain input type.
+  /// Deserialize the write() records of the current cycle into domain input.
   ///
-  /// Receives one [Uint8List] per write() in the **current cycle only** —
-  /// each element preserves a single write boundary intact. This is the seam
-  /// that lets the callee decide framing: a datagram subsystem reads one
-  /// message per record; an unstructured one concatenates. The framework
-  /// never learns the subsystem's notion of a message.
-  ///
-  /// Not session history — cross-cycle state is caller-managed. Each
-  /// write/flush cycle starts with a fresh, empty record list.
+  /// Receives the per-write records for the **current cycle only**, one
+  /// [Uint8List] per `write()` syscall — record boundaries preserved, never
+  /// collapsed into a single buffer (the SOCK_SEQPACKET datagram law: 1
+  /// write = 1 record, no in-band delimiter). Not session history —
+  /// cross-cycle state is caller-managed. Each write/flush cycle starts with
+  /// a fresh record list.
   ///
   /// Optional — subsystem layers can provide defaults. If null at call time,
   /// the framework throws [DriverError.notSupported].

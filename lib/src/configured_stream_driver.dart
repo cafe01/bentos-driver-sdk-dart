@@ -55,9 +55,10 @@ final class _Session<C, S> {
   /// Current state machine phase.
   _Phase phase = _Phase.open;
 
-  /// Accumulated write records — one [Uint8List] per write(), each preserving
-  /// a single write boundary intact for the subsystem's decodeInput.
-  final records = <Uint8List>[];
+  /// Per-write input records for the current cycle — one entry per write()
+  /// syscall, record boundaries preserved (the SOCK_SEQPACKET datagram law:
+  /// 1 write = 1 record, never collapsed into a single buffer).
+  final input = <Uint8List>[];
 
   /// Buffered output chunks (serialized).
   final outputBuffer = Queue<Uint8List>();
@@ -192,26 +193,21 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     }
   }
 
-  /// Deliver exactly ONE buffered output chunk per read — one process yield maps
-  /// to one read event, preserving the boundary the subsystem emitted. A chunk
-  /// larger than [size] splits across reads (a byte-stream WITHIN a single
-  /// yield), but two distinct yields never coalesce into one read.
   FuseResponse _deliverOutput(_Session<C, S> session, int size) {
+    // Datagram-symmetric output: exactly ONE record per read() — the mirror of
+    // the input side's 1 write = 1 record. The buffered chunk IS one encoded
+    // output record (one ChatEvent); coalescing multiple records into a single
+    // read, the way a byte stream would, violates the SOCK_SEQPACKET boundary
+    // law just as in-band length-prefix framing did on input. The kernel, not
+    // the driver, owns any MSG_TRUNC truncation against `size`.
     final chunk = session.outputBuffer.removeFirst();
-    final Uint8List out;
-    if (chunk.length <= size) {
-      out = chunk;
-    } else {
-      out = Uint8List.sublistView(chunk, 0, size);
-      session.outputBuffer.addFirst(Uint8List.sublistView(chunk, size));
-    }
 
     // If buffer drained and stream done, mark draining.
     if (session.outputBuffer.isEmpty && session.outputDone) {
       session.phase = _Phase.draining;
     }
 
-    return FuseResponse(buf: BufReply(data: out));
+    return FuseResponse(buf: BufReply(data: chunk));
   }
 
   Future<FuseResponse> _onWrite(WriteReq req, DriverContext ctx) async {
@@ -223,14 +219,14 @@ final class ConfiguredStreamDriver<C, I, O, S> {
       case _Phase.open:
         // First write with default config — advance to CONFIGURED.
         session.phase = _Phase.configured;
-        session.records.add(Uint8List.fromList(req.data));
+        session.input.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
 
       case _Phase.configured:
-        // More writes accumulate.
-        session.records.add(Uint8List.fromList(req.data));
+        // More writes — each is its own record.
+        session.input.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
@@ -240,7 +236,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
         session.phase = _Phase.configured;
         session.streamError = null;
         session.streamErrorStack = null;
-        session.records.add(Uint8List.fromList(req.data));
+        session.input.add(Uint8List.fromList(req.data));
         return FuseResponse(
           write: WriteReply(count: fixnum.Int64(req.data.length)),
         );
@@ -283,11 +279,8 @@ final class ConfiguredStreamDriver<C, I, O, S> {
   /// Submit accumulated input to process().
   Future<void> _submit(_Session<C, S> session) async {
     session.phase = _Phase.processing;
-    // Hand the records to decodeInput, then clear — one cycle, fresh buffer.
-    // Snapshot the list so a re-entrant write (post-clear) can't mutate it
-    // under the callee.
-    final records = List<Uint8List>.of(session.records);
-    session.records.clear();
+    final records = List<Uint8List>.of(session.input);
+    session.input.clear();
 
     if (ops.decodeInput == null) {
       session.phase = _Phase.configured;
@@ -503,7 +496,7 @@ final class ConfiguredStreamDriver<C, I, O, S> {
     session.outputDone = false;
     session.streamError = null;
     session.streamErrorStack = null;
-    session.records.clear();
+    session.input.clear();
     session.config = ops.defaultConfig();
     session.phase = _Phase.open;
 
