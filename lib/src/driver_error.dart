@@ -30,6 +30,8 @@ sealed class DriverError implements Exception {
   factory DriverError.notSupported(String msg) = NotSupportedError._;
   factory DriverError.accessDenied(String msg) = AccessDeniedError._;
   factory DriverError.wouldBlock(String msg) = WouldBlockError._;
+  factory DriverError.brokenPipe(String msg) = BrokenPipeError._;
+  factory DriverError.notTty(String msg) = NotTtyError._;
 }
 
 /// EINVAL (22) — bad input, malformed data, unknown config command.
@@ -100,4 +102,18 @@ final class WouldBlockError extends DriverError {
   const WouldBlockError._(super.message);
   @override
   int get errno => 11;
+}
+
+/// EPIPE (32) — write after the input direction closed (`*_INPUT_END`).
+final class BrokenPipeError extends DriverError {
+  const BrokenPipeError._(super.message);
+  @override
+  int get errno => 32;
+}
+
+/// ENOTTY (25) — an ioctl the device class doesn't carry.
+final class NotTtyError extends DriverError {
+  const NotTtyError._(super.message);
+  @override
+  int get errno => 25;
 }

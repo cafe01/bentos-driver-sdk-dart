@@ -16,6 +16,8 @@ void main() {
       expect(DriverError.notSupported('x'), isA<NotSupportedError>());
       expect(DriverError.accessDenied('x'), isA<AccessDeniedError>());
       expect(DriverError.wouldBlock('x'), isA<WouldBlockError>());
+      expect(DriverError.brokenPipe('x'), isA<BrokenPipeError>());
+      expect(DriverError.notTty('x'), isA<NotTtyError>());
     });
 
     test('errno values match POSIX', () {
@@ -27,6 +29,8 @@ void main() {
       expect(DriverError.accessDenied('').errno, 13);
       expect(DriverError.busy('').errno, 16);
       expect(DriverError.invalidArgument('').errno, 22);
+      expect(DriverError.notTty('').errno, 25);
+      expect(DriverError.brokenPipe('').errno, 32);
       expect(DriverError.notSupported('').errno, 38);
       expect(DriverError.timedOut('').errno, 110);
     });
@@ -44,6 +48,8 @@ void main() {
         NotSupportedError() => 'not supported',
         AccessDeniedError() => 'access denied',
         WouldBlockError() => 'would block',
+        BrokenPipeError() => 'broken pipe',
+        NotTtyError() => 'not a tty',
       };
       expect(result, equals('not found'));
     });
